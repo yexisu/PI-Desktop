@@ -135,6 +135,30 @@ test("an orphan optimistic prompt collapses into its durable echo (D334)", () =>
   );
 });
 
+test("a just-sent prompt is never collapsed into an older identical durable prompt", () => {
+  // Review on #1334: optimistic rows carry status "complete", so flight
+  // status alone cannot protect a new prompt. A fresh send is strictly
+  // newer than every durable row; the credit must not apply to it even
+  // when an earlier prompt has the same text.
+  const old = message("sdk-user-1", {
+    role: "user",
+    content: "1",
+    createdAt: "2026-08-31T00:00:01.000Z",
+  });
+  const answer = message("sdk-answer-1", { content: "reply" });
+  const fresh = message(
+    "11111111-2222-4333-8444-555555555555",
+    { role: "user", content: "1", createdAt: "2026-08-31T00:05:00.000Z" },
+  );
+  const durable = [old, answer];
+  const live = [old, answer, fresh];
+
+  assert.deepEqual(
+    mergeLiveSessionMessages(durable, live).map(({ id }) => id),
+    ["sdk-user-1", "sdk-answer-1", "11111111-2222-4333-8444-555555555555"],
+  );
+});
+
 test("a genuinely repeated prompt stays visible after a switch", () => {
   // Two real sends of the same text persist two durable rows; one live orphan
   // may consume one, but the second repeat must survive the merge.

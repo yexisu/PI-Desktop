@@ -209,6 +209,13 @@ export function mergeLiveSessionMessages(
   // live user row with equal text consumes one and is dropped. A genuinely
   // repeated prompt keeps every durable row because two sends persist two
   // rows while each live orphan still only consumes one credit.
+  //
+  // The credit is only payable to rows that predate the durable page's newest
+  // user row: a persisted echo was created no later than the page, while a
+  // just-sent optimistic prompt (also status "complete") is strictly newer
+  // than every durable row and must never be swallowed by an older identical
+  // prompt's credit (review on #1334).
+  let newestDurableUserAt: string | undefined;
   const durableUserTextCredits = new Map<string, number>();
   for (const message of durable) {
     if (message.role !== "user") continue;
@@ -216,6 +223,9 @@ export function mergeLiveSessionMessages(
       message.content,
       (durableUserTextCredits.get(message.content) ?? 0) + 1,
     );
+    if (!newestDurableUserAt || (message.createdAt && message.createdAt > newestDurableUserAt)) {
+      newestDurableUserAt = message.createdAt;
+    }
   }
   const merged: UiMessage[] = [];
   const push = (message: UiMessage) => {
@@ -223,7 +233,8 @@ export function mergeLiveSessionMessages(
     if (
       message.role === "user" &&
       !isInFlightMessage(message) &&
-      !durableIds.has(message.id)
+      !durableIds.has(message.id) &&
+      !(message.createdAt && newestDurableUserAt && message.createdAt > newestDurableUserAt)
     ) {
       const credits = durableUserTextCredits.get(message.content) ?? 0;
       if (credits > 0) {
@@ -275,18 +286,8 @@ export function mergeLiveSessionMessages(
   }
 
   for (const message of liveNormalized) {
-    if (used.has(message.id)) continue;
-    if (
-      message.role === "user" &&
-      !isInFlightMessage(message) &&
-      !durableIds.has(message.id)
-    ) {
-      const credits = durableUserTextCredits.get(message.content) ?? 0;
-      if (credits > 0) {
-        durableUserTextCredits.set(message.content, credits - 1);
-        continue;
-      }
-    }
+    // push() owns the orphan-credit collapse (with the recency guard), so
+    // this pass only feeds unmatched live rows through it.
     push(message);
   }
 
